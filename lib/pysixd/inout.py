@@ -231,11 +231,11 @@ def load_scene_camera(path):
 
     for im_id in scene_camera.keys():
         if "cam_K" in scene_camera[im_id].keys():
-            scene_camera[im_id]["cam_K"] = np.array(scene_camera[im_id]["cam_K"], np.float).reshape((3, 3))
+            scene_camera[im_id]["cam_K"] = np.array(scene_camera[im_id]["cam_K"], np.float32).reshape((3, 3))
         if "cam_R_w2c" in scene_camera[im_id].keys():
-            scene_camera[im_id]["cam_R_w2c"] = np.array(scene_camera[im_id]["cam_R_w2c"], np.float).reshape((3, 3))
+            scene_camera[im_id]["cam_R_w2c"] = np.array(scene_camera[im_id]["cam_R_w2c"], np.float32).reshape((3, 3))
         if "cam_t_w2c" in scene_camera[im_id].keys():
-            scene_camera[im_id]["cam_t_w2c"] = np.array(scene_camera[im_id]["cam_t_w2c"], np.float).reshape((3, 1))
+            scene_camera[im_id]["cam_t_w2c"] = np.array(scene_camera[im_id]["cam_t_w2c"], np.float32).reshape((3, 1))
     return scene_camera
 
 
@@ -271,9 +271,9 @@ def load_scene_gt(path):
     for im_id, im_gt in scene_gt.items():
         for gt in im_gt:
             if "cam_R_m2c" in gt.keys():
-                gt["cam_R_m2c"] = np.array(gt["cam_R_m2c"], np.float).reshape((3, 3))
+                gt["cam_R_m2c"] = np.array(gt["cam_R_m2c"], np.float32).reshape((3, 3))
             if "cam_t_m2c" in gt.keys():
-                gt["cam_t_m2c"] = np.array(gt["cam_t_m2c"], np.float).reshape((3, 1))
+                gt["cam_t_m2c"] = np.array(gt["cam_t_m2c"], np.float32).reshape((3, 1))
     return scene_gt
 
 
@@ -325,8 +325,8 @@ def load_bop_results(path, version="bop19"):
                         "im_id": int(elems[1]),
                         "obj_id": int(elems[2]),
                         "score": float(elems[3]),
-                        "R": np.array(list(map(float, elems[4].split())), np.float).reshape((3, 3)),
-                        "t": np.array(list(map(float, elems[5].split())), np.float).reshape((3, 1)),
+                        "R": np.array(list(map(float, elems[4].split())), np.float32).reshape((3, 3)),
+                        "t": np.array(list(map(float, elems[5].split())), np.float32).reshape((3, 1)),
                         "time": float(elems[6]),
                     }
 
@@ -574,9 +574,9 @@ def load_ply(path, vertex_scale=1.0):
     model = {}
     if texture_file is not None:
         model["texture_file"] = texture_file
-    model["pts"] = np.zeros((n_pts, 3), np.float)
+    model["pts"] = np.zeros((n_pts, 3), np.float32)
     if n_faces > 0:
-        model["faces"] = np.zeros((n_faces, face_n_corners), np.float)
+        model["faces"] = np.zeros((n_faces, face_n_corners), np.float32)
 
     # print(pt_props)
     pt_props_names = [p[0] for p in pt_props]
@@ -586,22 +586,22 @@ def load_ply(path, vertex_scale=1.0):
     is_normal = False
     if {"nx", "ny", "nz"}.issubset(set(pt_props_names)):
         is_normal = True
-        model["normals"] = np.zeros((n_pts, 3), np.float)
+        model["normals"] = np.zeros((n_pts, 3), np.float32)
 
     is_color = False
     if {"red", "green", "blue"}.issubset(set(pt_props_names)):
         is_color = True
-        model["colors"] = np.zeros((n_pts, 3), np.float)
+        model["colors"] = np.zeros((n_pts, 3), np.float32)
 
     is_texture_pt = False
     if {"texture_u", "texture_v"}.issubset(set(pt_props_names)):
         is_texture_pt = True
-        model["texture_uv"] = np.zeros((n_pts, 2), np.float)
+        model["texture_uv"] = np.zeros((n_pts, 2), np.float32)
 
     is_texture_face = False
     if {"texcoord"}.issubset(set(face_props_names)):
         is_texture_face = True
-        model["texture_uv_face"] = np.zeros((n_faces, 6), np.float)
+        model["texture_uv_face"] = np.zeros((n_faces, 6), np.float32)
 
     # Formats for the binary case.
     formats = {
