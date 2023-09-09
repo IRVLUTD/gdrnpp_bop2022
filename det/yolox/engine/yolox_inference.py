@@ -227,3 +227,89 @@ def yolox_inference_on_dataset(
     if results is None:
         results = {}
     return results
+    
+    
+    
+def yolox_inference_on_image(
+    model,
+    imgs,     # torch.Size([1, 3, height, width])
+    amp_test=False,
+    half_test=False,
+    trt_file=None,
+    decoder=None,
+    test_cfg=OmegaConf.create(
+        dict(
+            test_size=(640, 640),
+            conf_thr=0.01,
+            nms_thr=0.65,
+            num_classes=80,
+        )
+    ),
+    val_cfg=OmegaConf.create(
+        dict(
+            eval_cached=False,
+        )
+    ),
+):
+    """Run model on the data_loader and evaluate the metrics with evaluator.
+    Also benchmark the inference speed of `model.__call__` accurately. The
+    model will be used in eval mode.
+
+    Args:
+        model (callable): a callable which takes an object from
+            `data_loader` and returns some outputs.
+
+            If it's an nn.Module, it will be temporarily set to `eval` mode.
+            If you wish to evaluate a model in `training` mode instead, you can
+            wrap the given model and override its behavior of `.eval()` and `.train()`.
+        data_loader: an iterable object with a length.
+            The elements it generates will be the inputs to the model.
+        evaluator: the evaluator(s) to run. Use `None` if you only want to benchmark,
+            but don't want to do any evaluation.
+
+    Returns:
+        The return value of `evaluator.evaluate()`
+    """
+    num_devices = get_world_size()
+    assert int(half_test) + int(amp_test) <= 1, "half_test and amp_test cannot both be set"
+    logger.info(f"half_test: {half_test}, amp_test: {amp_test}")
+
+    cfg = test_cfg
+    iters_record = 0
+    augment = cfg.get("augment", False)
+    with ExitStack() as stack:
+        if isinstance(model, nn.Module):
+            stack.enter_context(inference_context(model))
+        stack.enter_context(torch.no_grad())
+
+        tensor_type = torch.cuda.HalfTensor if (half_test or amp_test) else torch.cuda.FloatTensor
+        if half_test:
+            model = model.half()
+
+        if trt_file is not None:
+            from torch2trt import TRTModule
+
+            model_trt = TRTModule()
+            model_trt.load_state_dict(torch.load(trt_file))
+
+            x = torch.ones(1, 3, cfg.test_size[0], cfg.test_size[1]).cuda()
+            model(x)
+            model = model_trt
+
+        progress_bar = tqdm if is_main_process() else iter
+
+        # main testing
+        imgs = imgs.type(tensor_type)
+
+        if trt_file is not None:
+            det_preds = model(imgs)
+            outputs = {"det_preds": det_preds}
+        else:
+            # outputs = model(imgs)
+            outputs = model(imgs, augment=augment, cfg=cfg)
+
+        if decoder is not None:
+            outputs["det_preds"] = decoder(outputs["det_preds"], dtype=outputs.type())
+        
+        outputs["det_preds"] = postprocess(outputs["det_preds"], cfg.num_classes, cfg.conf_thr, cfg.nms_thr, class_agnostic=True)
+        return outputs
