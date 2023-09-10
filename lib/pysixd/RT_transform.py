@@ -295,8 +295,8 @@ def egocentric_to_allocentric(ego_pose, src_type="mat", dst_type="mat", cam_ray=
 # For testing whether a number is close to zero
 _EPS4 = np.finfo(float).eps * 4.0
 
-_MAX_FLOAT = np.maximum_sctype(np.float)
-_FLOAT_EPS = np.finfo(np.float).eps
+_MAX_FLOAT = np.maximum_sctype(np.float32)
+_FLOAT_EPS = np.finfo(np.float32).eps
 
 
 def my_mat2quat(mat, dtype=None):

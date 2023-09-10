@@ -45,8 +45,8 @@ SOLVER = dict(
 
 DATASETS = dict(
     TRAIN=("ycbv_train_real", "ycbv_train_pbr"),
-    TEST=("ycbv_test",),
-    DET_FILES_TEST=("datasets/BOP_DATASETS/ycbv/test/test_bboxes/yolox_x_640_ycbv_real_pbr_ycbv_bop_test.json",),
+    TEST=("ycbv_bop_test",),
+    DET_FILES_TEST=("datasets/BOP_DATASETS/ycbv/test/test_bboxes/yolox_x_640_ycbv_pbr_ycbv_bop_test.json",),
     SYM_OBJS=[
         "024_bowl",
         "036_wood_block",
