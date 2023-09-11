@@ -13,6 +13,7 @@ import os.path as osp
 import numpy as np
 import time
 import rospy
+import ros_numpy
 
 from cv_bridge import CvBridge, CvBridgeError
 from std_msgs.msg import String
@@ -122,9 +123,9 @@ class ImageListener:
     def callback_rgbd(self, rgb, depth):
 
         if depth.encoding == '32FC1':
-            depth_cv = self.cv_bridge.imgmsg_to_cv2(depth)
+            depth_cv = ros_numpy.numpify(depth)
         elif depth.encoding == '16UC1':
-            depth_cv = self.cv_bridge.imgmsg_to_cv2(depth).copy().astype(np.float32)
+            depth_cv = ros_numpy.numpify(depth).copy().astype(np.float32)
             depth_cv /= 1000.0
         else:
             rospy.logerr_throttle(
@@ -132,7 +133,7 @@ class ImageListener:
                     depth.encoding))
             return
 
-        im = self.cv_bridge.imgmsg_to_cv2(rgb, 'bgr8')
+        im = ros_numpy.numpify(rgb)
 
         with lock:
             self.im = im.copy()
@@ -148,6 +149,12 @@ class ImageListener:
             im = self.im.copy()
             depth_cv = self.depth.copy()
             rgb_frame_id = self.rgb_frame_id
+            
+        # rgb -> bgr
+        im = im[:, :, (2, 1, 0)]
+        # import matplotlib.pyplot as plt
+        # plt.imshow(im)
+        # plt.show()
 
         fusion_type = ''
         start_time = time.time()
@@ -198,7 +205,10 @@ class ImageListener:
         im_label = im.copy()
         for i in range(num):
             bbox = det_preds[i, 0:4].astype(np.int32)
-            im_label = cv2.rectangle(im_label, bbox[:2], bbox[2:], color, thickness)        
+            cls = int(det_preds[i, -1])
+            im_label = cv2.rectangle(im_label, bbox[:2], bbox[2:], color, thickness)
+            im_label = cv2.putText(im_label, class_names[cls], bbox[:2], cv2.FONT_HERSHEY_SIMPLEX, 
+                   1, (0, 0, 255), thickness, cv2.LINE_AA)       
         
         label_msg = self.cv_bridge.cv2_to_imgmsg(im_label)
         label_msg.header.stamp = rospy.Time.now()
