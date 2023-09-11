@@ -733,16 +733,6 @@ def gdrn_inference_on_dataset(cfg, model, data_loader, evaluator, amp_test=False
             else:
                 inp = batch["roi_img"]
 
-            print(inp.shape)
-            print('roi_cls', batch["roi_cls"])      
-            print('roi_cam', batch["roi_cam"])
-            print('roi_wh', batch["roi_wh"])          
-            print('roi_center', batch["roi_center"])
-            print('resize_ratio', batch["resize_ratio"])
-            print('roi_coord_2d', batch.get("roi_coord_2d", None))
-            print('roi_coord_2d_rel', batch.get("roi_coord_2d_rel", None))
-            print('roi_extent', batch.get("roi_extent", None))
-
             with autocast(enabled=amp_test):  # gdrn amp_test seems slower
                 out_dict = model(
                     inp,
@@ -755,8 +745,6 @@ def gdrn_inference_on_dataset(cfg, model, data_loader, evaluator, amp_test=False
                     roi_coord_2d_rel=batch.get("roi_coord_2d_rel", None),
                     roi_extents=batch.get("roi_extent", None),
                 )
-                print(out_dict)
-            sys.exit(1)        
                     
             if torch.cuda.is_available():
                 torch.cuda.synchronize()

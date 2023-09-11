@@ -15,13 +15,21 @@ import rospy
 import glob
 import copy
 
+
+cur_dir = osp.dirname(osp.abspath(__file__))
+sys.path.insert(0, osp.join(cur_dir, "../../../"))
+from pytorch_lightning import seed_everything
 from detectron2.data import MetadataCatalog
 from mmcv import Config
 from setproctitle import setproctitle
+
+from core.utils.my_setup import setup_for_distributed
+from core.utils.my_checkpoint import MyCheckpointer
 from lib.utils.time_utils import get_time_str
 from lib.utils.utils import iprint
 from gdrnpp_listener import ImageListener
 from core.utils.default_args_setup import my_default_argument_parser, my_default_setup
+from core.gdrn_modeling.engine.engine import GDRN_Lite
 from core.gdrn_modeling.datasets.dataset_factory import register_datasets_in_cfg
 from core.gdrn_modeling.models import (
     GDRN,
@@ -121,6 +129,54 @@ def setup(args):
     ####################################
     # cfg.freeze()
     return cfg
+    
+    
+class Lite(GDRN_Lite):
+    def set_my_env(self, args, cfg):
+        my_default_setup(cfg, args)  # will set os.environ["PYTHONHASHSEED"]
+        seed_everything(int(os.environ["PYTHONHASHSEED"]), workers=True)
+        setup_for_distributed(is_master=self.is_global_zero)
+
+    def run(self, args, cfg):
+        self.set_my_env(args, cfg)
+
+        # get renderer ----------------------
+        if args.eval_only or cfg.TEST.SAVE_RESULTS_ONLY or (not cfg.MODEL.POSE_NET.XYZ_ONLINE):
+            renderer = None
+        else:
+            train_dset_meta = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
+            data_ref = ref.__dict__[train_dset_meta.ref_key]
+            train_obj_names = train_dset_meta.objs
+            render_gpu_id = self.local_rank
+            renderer = get_renderer(cfg, data_ref, obj_names=train_obj_names, gpu_id=render_gpu_id)
+
+        logger.info(f"Used GDRN module name: {cfg.MODEL.POSE_NET.NAME}")
+        model, optimizer = eval(cfg.MODEL.POSE_NET.NAME).build_model_optimizer(cfg, is_test=args.eval_only)
+        logger.info("Model:\n{}".format(model))
+
+        # don't forget to call `setup` to prepare for model / optimizer for distributed training.
+        # the model is moved automatically to the right device.
+        if optimizer is not None:
+            model, optimizer = self.setup(model, optimizer)
+        else:
+            model = self.setup(model)
+
+        if True:
+            # sum(p.numel() for p in model.parameters() if p.requires_grad)
+            params = sum(p.numel() for p in model.parameters()) / 1e6
+            logger.info("{}M params".format(params))
+
+        if cfg.TEST.SAVE_RESULTS_ONLY:  # save results only ------------------------------
+            MyCheckpointer(model, save_dir=cfg.OUTPUT_DIR, prefix_to_remove="_module.").resume_or_load(
+                cfg.MODEL.WEIGHTS, resume=args.resume
+            )
+
+        if args.eval_only:  # eval only --------------------------------------------------
+            MyCheckpointer(model, save_dir=cfg.OUTPUT_DIR, prefix_to_remove="_module.").resume_or_load(
+                cfg.MODEL.WEIGHTS, resume=args.resume
+            )
+
+        return cfg, model   
 
 
 if __name__ == '__main__':
@@ -140,10 +196,14 @@ if __name__ == '__main__':
     cfg = setup(args)
     pprint.pprint(cfg)
 
-    # set up model
-    logger.info(f"Used GDRN module name: {cfg.MODEL.POSE_NET.NAME}")
-    model, optimizer = eval(cfg.MODEL.POSE_NET.NAME).build_model_optimizer(cfg, is_test=args.eval_only)
-    logger.info("Model:\n{}".format(model))
+    # set up model    
+    cfg, model = Lite(
+        accelerator="gpu",
+        strategy=args.strategy,
+        devices=args.num_gpus,
+        num_nodes=args.num_machines,
+        precision=16 if cfg.SOLVER.AMP.ENABLED else 32,
+    ).run(args, cfg)
     
     # get class names
     dataset_meta = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])

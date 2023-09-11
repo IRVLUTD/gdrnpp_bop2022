@@ -13,6 +13,7 @@ import random
 import datetime
 import tf.transformations as tra
 import matplotlib.pyplot as plt
+import ros_numpy
 
 # from queue import queue
 from random import shuffle
@@ -232,9 +233,9 @@ class ImageListener:
         # decode image
         if depth is not None:
             if depth.encoding == '32FC1':
-                depth_cv = self.cv_bridge.imgmsg_to_cv2(depth)
+                depth_cv = ros_numpy.numpify(depth)
             elif depth.encoding == '16UC1':
-                depth = self.cv_bridge.imgmsg_to_cv2(depth)
+                depth_cv = ros_numpy.numpify(depth)
                 depth_cv = depth.copy().astype(np.float32)
                 depth_cv /= 1000.0
             else:
@@ -246,7 +247,7 @@ class ImageListener:
         with lock:
             self.input_depth = depth_cv
             # rgb image used for posecnn detection
-            self.input_rgb = self.cv_bridge.imgmsg_to_cv2(rgb, 'rgb8')
+            self.input_rgb = ros_numpy.numpify(rgb)
             # other information
             self.input_stamp = rgb.header.stamp
             self.input_frame_id = rgb.header.frame_id
@@ -379,7 +380,7 @@ class ImageListener:
             # inherent image-level infos
             roi_infos["im_H"].append(im_H)
             roi_infos["im_W"].append(im_W)
-            roi_infos["cam"].append(self.intrinsic_matrix)
+            roi_infos["cam"].append(self.intrinsic_matrix.astype("float32"))
 
             # roi-level infos
             roi_cls = int(roi[1])
@@ -389,7 +390,7 @@ class ImageListener:
 
             # extent
             roi_extent = self.extents[roi_cls]
-            roi_infos["roi_extent"].append(roi_extent)
+            roi_infos["roi_extent"].append(roi_extent.astype("float32"))
 
             # TODO: adjust amodal bbox here
             x1, y1, x2, y2 = roi[2:6]
@@ -403,13 +404,19 @@ class ImageListener:
             roi_infos["scale"].append(scale)
             roi_wh = np.array([bw, bh], dtype=np.float32)
             roi_infos["roi_wh"].append(roi_wh)
-            roi_infos["resize_ratio"].append(out_res / scale)
+            roi_infos["resize_ratio"].append((out_res / scale).astype("float32"))
 
             # CHW, float32 tensor
             # roi_image
             roi_img = crop_resize_by_warp_affine(
                 image, bbox_center, scale, input_res, interpolation=cv2.INTER_LINEAR
             ).transpose(2, 0, 1)
+            
+            # rgb -> bgr
+            print(roi_img.shape)
+            import matplotlib.pyplot as plt
+            plt.imshow(roi_img.transpose(1, 2, 0))
+            plt.show()              
 
             roi_img = self.normalize_image(self.cfg, roi_img)
             roi_infos["roi_img"].append(roi_img.astype("float32"))
@@ -456,7 +463,7 @@ class ImageListener:
 
 
     # function for pose etimation and tracking
-    def process_image_multi_obj(self, rgb, depth, rois):
+    def process_image_multi_obj(self, rgb, depth, rois):    
     
         # prepare data, rgb -> bgr
         batch = self.read_data_test(rgb[:, :, (2, 1, 0)], depth, rois)
@@ -465,11 +472,19 @@ class ImageListener:
         # run network
         if self.cfg.INPUT.WITH_DEPTH and "depth" in self.cfg.MODEL.POSE_NET.NAME.lower():
             inp = torch.cat([batch["roi_img"], batch["roi_depth"]], dim=1)
+            print('use depth')
         else:
             inp = batch["roi_img"]
+            print('not use depth')
         print(inp.shape)
-        print(batch["bbox_center"].shape)
-        print(batch["cam"].shape)
+        print('roi_cls', batch["roi_cls"], batch["roi_cls"].shape)        
+        print('cam', batch["cam"], batch["cam"].shape)           
+        print('roi_wh', batch["roi_wh"], batch["roi_wh"].shape)           
+        print('bbox_center', batch["bbox_center"], batch["bbox_center"].shape)
+        print('resize_ratio', batch["resize_ratio"], batch["resize_ratio"].shape)        
+        print('roi_coord_2d', batch["roi_coord_2d"], batch["roi_coord_2d"].shape)          
+        print('roi_coord_2d_rel', batch["roi_coord_2d_rel"], batch["roi_coord_2d_rel"].shape)           
+        print('roi_extent', batch["roi_extent"], batch["roi_extent"].shape)  
         
         out_dict = self.model(
                     inp,
