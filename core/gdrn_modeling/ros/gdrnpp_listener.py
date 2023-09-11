@@ -476,6 +476,8 @@ class ImageListener:
         else:
             inp = batch["roi_img"]
             print('not use depth')
+        
+        '''
         print(inp.shape)
         print('roi_cls', batch["roi_cls"], batch["roi_cls"].shape)        
         print('cam', batch["cam"], batch["cam"].shape)           
@@ -484,7 +486,8 @@ class ImageListener:
         print('resize_ratio', batch["resize_ratio"], batch["resize_ratio"].shape)        
         print('roi_coord_2d', batch["roi_coord_2d"], batch["roi_coord_2d"].shape)          
         print('roi_coord_2d_rel', batch["roi_coord_2d_rel"], batch["roi_coord_2d_rel"].shape)           
-        print('roi_extent', batch["roi_extent"], batch["roi_extent"].shape)  
+        print('roi_extent', batch["roi_extent"], batch["roi_extent"].shape)
+        '''
         
         out_dict = self.model(
                     inp,
