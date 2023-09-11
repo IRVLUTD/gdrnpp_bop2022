@@ -655,7 +655,7 @@ class GDRN_DatasetFromList(Base_DatasetFromList):
 
         dataset_dict = copy.deepcopy(dataset_dict)  # it will be modified by code below
 
-        dataset_name = dataset_dict["dataset_name"]
+        dataset_name = dataset_dict["dataset_name"]      
 
         image = read_image_mmcv(dataset_dict["file_name"], format=self.img_format)
         # should be consistent with the size in dataset_dict
