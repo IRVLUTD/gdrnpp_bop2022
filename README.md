@@ -91,6 +91,31 @@ Run
 
 For iterative refinement, please checkout to the [pose_refine branch](https://github.com/shanice-l/gdrnpp_bop2022/tree/pose_refine) for details.
 
+
+## Running on Realsense cameras or Fetch for 21 YCB Objects
+
+1. Run YOLO detection for YCB objects
+    ```Shell
+    # run yolox for detection (21 YCB objects), $GPU_ID can be 0, 1, etc.
+    ./det/yolox/ros/ros_yolox.sh <config_path> <gpu_ids> <ckpt_path>
+    ```
+    For example:
+    `./det/yolox/ros/ros_yolox.sh configs/yolox/bop_pbr/yolox_x_640_augCozyAAEhsv_ranger_30_epochs_ycbv_pbr_ycbv_bop_test.py 0 output/yolox/bop_pbr/yolox_x_640_augCozyAAEhsv_ranger_30_epochs_ycbv_pbr_ycbv_bop_test/model_final.pth`
+    
+
+2. Run GDRNPP for YCB objects
+    ```Shell
+    # $GPU_ID can be 0, 1, etc.
+    ./core/gdrn_modeling/ros/ros_gdrnpp.sh <config_path> <gpu_ids> <ckpt_path>
+    ```
+    For example:
+    `./core/gdrn_modeling/ros/ros_gdrnpp.sh configs/gdrn/ycbv/convnext_a6_AugCosyAAEGray_BG05_mlL1_DMask_amodalClipBox_classAware_ycbv.py 0 output/gdrn/ycbv/convnext_a6_AugCosyAAEGray_BG05_mlL1_DMask_amodalClipBox_classAware_ycbv/model_final_wo_optim.pth`
+    
+<p align="center"><img src="data/example.png" width="640" height="320"/></p> 
+
+IRVL internal use: use conda environment `conda activate gdrnpp`
+
+
 ## Citing GDRNPP
 
 If you use GDRNPP in your research, please use the following BibTeX entries.

@@ -190,10 +190,13 @@ class ImageListener:
             val_cfg=self.cfg.val,
         )        
         print(ret)
-        print("--- %s seconds ---" % (time.time() - start_time))        
+        print("--- %s seconds ---" % (time.time() - start_time))
         
-        det_preds = ret['det_preds'][0].cpu().numpy()
-        num = det_preds.shape[0]
+        if ret['det_preds'][0] is None:
+            num = 0
+        else:        
+            det_preds = ret['det_preds'][0].cpu().numpy()
+            num = det_preds.shape[0]
         print('%d object detected' % num)
 
         # publish box image
