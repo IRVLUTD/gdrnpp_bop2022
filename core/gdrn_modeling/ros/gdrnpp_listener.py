@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import threading
 import sys
+import os.path as osp
 import scipy.io
 import random
 import datetime
@@ -340,7 +341,7 @@ class ImageListener:
         poses = self.process_image_multi_obj(input_rgb, input_depth, rois_est)
         self.rois_est = rois_est
         self.yolo_names = yolo_names
-        self.poses = poses
+        self.poses = poses     
         
         
     def normalize_image(self, cfg, image):
