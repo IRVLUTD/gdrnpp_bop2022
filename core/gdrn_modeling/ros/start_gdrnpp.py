@@ -166,17 +166,11 @@ class Lite(GDRN_Lite):
             params = sum(p.numel() for p in model.parameters()) / 1e6
             logger.info("{}M params".format(params))
 
-        if cfg.TEST.SAVE_RESULTS_ONLY:  # save results only ------------------------------
-            MyCheckpointer(model, save_dir=cfg.OUTPUT_DIR, prefix_to_remove="_module.").resume_or_load(
-                cfg.MODEL.WEIGHTS, resume=args.resume
-            )
+        MyCheckpointer(model, save_dir=cfg.OUTPUT_DIR, prefix_to_remove="_module.").resume_or_load(
+            cfg.MODEL.WEIGHTS, resume=args.resume
+        )
 
-        if args.eval_only:  # eval only --------------------------------------------------
-            MyCheckpointer(model, save_dir=cfg.OUTPUT_DIR, prefix_to_remove="_module.").resume_or_load(
-                cfg.MODEL.WEIGHTS, resume=args.resume
-            )
-
-        return cfg, model   
+        return cfg, model
 
 
 if __name__ == '__main__':
@@ -206,8 +200,9 @@ if __name__ == '__main__':
     ).run(args, cfg)
     
     # get class names
-    dataset_meta = MetadataCatalog.get(cfg.DATASETS.TRAIN[0])
-    print(dataset_meta)
+    dataset_name = cfg.DATASETS.TRAIN[0]
+    dataset_meta = MetadataCatalog.get(dataset_name)
+    print(dataset_name, dataset_meta)
     cfg.class_names = dataset_meta.objs
     print(cfg.class_names)
     
@@ -216,7 +211,7 @@ if __name__ == '__main__':
     print(extents, extents.shape)
 
     # image listener
-    listener = ImageListener(cfg, model, extents)
+    listener = ImageListener(cfg, dataset_name, model, extents)
     while not rospy.is_shutdown():
         listener.process_data()
     listener.stop_publishing_tf()

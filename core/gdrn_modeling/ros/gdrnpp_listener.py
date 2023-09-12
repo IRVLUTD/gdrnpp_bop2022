@@ -14,6 +14,7 @@ import datetime
 import tf.transformations as tra
 import matplotlib.pyplot as plt
 import ros_numpy
+import ref
 
 # from queue import queue
 from random import shuffle
@@ -25,10 +26,11 @@ from sensor_msgs.msg import CameraInfo
 from sensor_msgs.msg import JointState
 from transforms3d.quaternions import mat2quat, quat2mat, qmult
 from geometry_msgs.msg import PoseStamped, PoseArray
+from detectron2.data import MetadataCatalog
 
 from core.utils.data_utils import crop_resize_by_warp_affine, get_2d_coord_np, read_image_mmcv, xyz_to_region
 from lib.utils.config_utils import try_get_key
-from core.gdrn_modeling.engine.engine_utils import batch_data
+from core.gdrn_modeling.engine.engine_utils import batch_data, get_out_coor, get_out_mask, batch_data_inference_roi
 
 lock = threading.Lock()
 lock_tf = threading.Lock()
@@ -71,14 +73,16 @@ def rotation_matrix_from_vectors(A, B):
 
 class ImageListener:
 
-    def __init__(self, cfg, model, extents):
+    def __init__(self, cfg, dataset_name, model, extents):
 
         print(' *** Initializing GDRNPP ROS Node ... ')
 
         # variables
         self.cfg = cfg
+        self.dataset_name = dataset_name
         self.model = model
         self.extents = extents
+        self._cpu_device = torch.device("cpu")
         
         self.cv_bridge = CvBridge()
         self.count = 0
@@ -187,9 +191,36 @@ class ImageListener:
         self.record = False
         self.Tbr_save = np.eye(4, dtype=np.float32)
         self.image_disp = None
+        
+        # main results
+        self.rois_est = None
+        self.yolo_names = None
+        self.poses = None
+        
+        if cfg.TEST.USE_DEPTH_REFINE:
+            from lib.render_vispy.model3d import load_models
+            from lib.render_vispy.renderer import Renderer
+
+            net_cfg = cfg.MODEL.POSE_NET
+            width = net_cfg.OUTPUT_RES
+            height = width
+            self.depth_refine_threshold = cfg.TEST.DEPTH_REFINE_THRESHOLD
+
+            self._metadata = MetadataCatalog.get(dataset_name)
+            self.data_ref = ref.__dict__[self._metadata.ref_key]
+
+            self.ren = Renderer(size=(width, height), cam=self.data_ref.camera_matrix)
+            self.ren_models = load_models(
+                model_paths=self.data_ref.model_paths,
+                scale_to_meter=0.001,
+                cache_dir=".cache",
+                texture_paths=self.data_ref.texture_paths if cfg.DEBUG else None,
+                center=False,
+                use_cache=True,
+            )
 
         # start pose thread
-        # self.start_publishing_tf()
+        self.start_publishing_tf()
 
 
     def start_publishing_tf(self):
@@ -210,19 +241,19 @@ class ImageListener:
     def tf_thread_func(self):
         rate = rospy.Rate(30.)
         while not self.stop_event.is_set() and not rospy.is_shutdown():
-
             # publish pose
             with lock_tf:
-
-                Tbo = self.pose_rbpf.rbpfs[i].T_in_base
-
-                # publish tf
-                t_bo = Tbo[:3, 3]
-                q_bo = mat2quat(Tbo[:3, :3])
-                self.br.sendTransform(t_bo, [q_bo[1], q_bo[2], q_bo[3], q_bo[0]], rospy.Time.now(), name, self.target_frame)
-                    
+                if self.rois_est is not None and self.yolo_names is not None and self.poses is not None:
+                    num = self.rois_est.shape[0]
+                    for i in range(num):
+                        name = self.yolo_names[i].replace('yolo', 'gdrnpp')
+                        print(name)
+                        # publish tf
+                        pose = self.poses[i]
+                        t_bo = pose[:, 3]
+                        q_bo = mat2quat(pose[:, :3])
+                        self.br.sendTransform(t_bo, [q_bo[1], q_bo[2], q_bo[3], q_bo[0]], rospy.Time.now(), name, self.camera_frame)
             rate.sleep()
-            # self.stop_event.wait(timeout=0.1)
 
 
     # callback function to get images
@@ -266,6 +297,7 @@ class ImageListener:
 
         # detection information of the target object
         rois_est = np.zeros((0, 7), dtype=np.float32)
+        yolo_names = []
         # TODO look for multiple object instances
         max_objects = 5
         class_names = self.cfg.class_names
@@ -298,32 +330,17 @@ class ImageListener:
                     roi[0, 5] = rot[3] * n
                     roi[0, 6] = trans[2]
                     rois_est = np.concatenate((rois_est, roi), axis=0)
+                    yolo_names.append(source_frame)
                     print('find yolo detection ' + source_frame)
                     print(rois_est)
                 except:
                     continue
 
-
         # call pose estimation function
-        image_disp, image_disp_1 = self.process_image_multi_obj(input_rgb, input_depth, rois_est)
-
-        # visualization
-        # '''
-        if image_disp is not None:
-            pose_msg = self.cv_bridge.cv2_to_imgmsg(image_disp)
-            pose_msg.header.stamp = rospy.Time.now()
-            pose_msg.header.frame_id = self.input_frame_id
-            pose_msg.encoding = 'rgb8'
-            self.pose_pub.publish(pose_msg)
-            self.image_disp = image_disp
-            
-            pose_msg = self.cv_bridge.cv2_to_imgmsg(image_disp_1)
-            pose_msg.header.stamp = rospy.Time.now()
-            pose_msg.header.frame_id = self.input_frame_id
-            pose_msg.encoding = 'rgb8'
-            self.pose_pub_1.publish(pose_msg)
-            
-        # '''
+        poses = self.process_image_multi_obj(input_rgb, input_depth, rois_est)
+        self.rois_est = rois_est
+        self.yolo_names = yolo_names
+        self.poses = poses
         
         
     def normalize_image(self, cfg, image):
@@ -413,10 +430,10 @@ class ImageListener:
             ).transpose(2, 0, 1)
             
             # rgb -> bgr
-            print(roi_img.shape)
-            import matplotlib.pyplot as plt
-            plt.imshow(roi_img.transpose(1, 2, 0))
-            plt.show()              
+            # print(roi_img.shape)
+            # import matplotlib.pyplot as plt
+            # plt.imshow(roi_img.transpose(1, 2, 0))
+            # plt.show()              
 
             roi_img = self.normalize_image(self.cfg, roi_img)
             roi_infos["roi_img"].append(roi_img.astype("float32"))
@@ -466,8 +483,7 @@ class ImageListener:
     def process_image_multi_obj(self, rgb, depth, rois):    
     
         # prepare data, rgb -> bgr
-        batch = self.read_data_test(rgb[:, :, (2, 1, 0)], depth, rois)
-        print(batch)
+        batch = self.read_data_test(rgb, depth, rois)
         
         # run network
         if self.cfg.INPUT.WITH_DEPTH and "depth" in self.cfg.MODEL.POSE_NET.NAME.lower():
@@ -500,141 +516,111 @@ class ImageListener:
                     roi_coord_2d_rel=batch.get("roi_coord_2d_rel", None),
                     roi_extents=batch.get("roi_extent", None),
         )
-        print(out_dict)
-        sys.exit(1)
-
-        image_rgb = rgb.astype(np.float32) / 255.0
-        image_bgr = image_rgb[:, :, (2, 1, 0)]
-        image_bgr = torch.from_numpy(image_bgr).cuda()
-        im_label = torch.from_numpy(im_label).cuda()
-
-        # backproject depth
-        depth = torch.from_numpy(depth).cuda()
-        fx = self.intrinsic_matrix[0, 0]
-        fy = self.intrinsic_matrix[1, 1]
-        px = self.intrinsic_matrix[0, 2]
-        py = self.intrinsic_matrix[1, 2]
-        # dpoints = backproject(depth, self.intrinsic_matrix)
-        im_pcloud = posecnn_cuda.backproject_forward(fx, fy, px, py, depth)[0]
-
-        # collect rois from rbpfs
-        num_rbpfs = self.pose_rbpf.num_rbpfs
-        rois_rbpf = np.zeros((num_rbpfs, 7), dtype=np.float32)
-        for i in range(num_rbpfs):
-            rois_rbpf[i, :] = self.pose_rbpf.rbpfs[i].roi
-            self.pose_rbpf.rbpfs[i].roi_assign = None
-
-        # data association based on bounding box overlap
-        num_rois = rois.shape[0]
-        assigned_rois = np.zeros((num_rois, ), dtype=np.int32)
-        if num_rbpfs > 0 and num_rois > 0:
-            # overlaps: (rois x gt_boxes) (batch_id, x1, y1, x2, y2)
-            overlaps = bbox_overlaps(np.ascontiguousarray(rois_rbpf[:, (1, 2, 3, 4, 5)], dtype=np.float),
-                np.ascontiguousarray(rois[:, (1, 2, 3, 4, 5)], dtype=np.float))
-
-            # assign rois to rbpfs
-            assignment = overlaps.argmax(axis=1)
-            max_overlaps = overlaps.max(axis=1)
-            unassigned = []
-            for i in range(num_rbpfs):
-                if max_overlaps[i] > 0.2:
-                    self.pose_rbpf.rbpfs[i].roi_assign = rois[assignment[i]]
-                    assigned_rois[assignment[i]] = 1
-                else:
-                    unassigned.append(i)
-
-            # check if there are un-assigned rois
-            index = np.where(assigned_rois == 0)[0]
-
-            # if there is un-assigned rbpfs
-            if len(unassigned) > 0 and len(index) > 0:
-                for i in range(len(unassigned)):
-                    for j in range(len(index)):
-                        if assigned_rois[index[j]] == 0 and self.pose_rbpf.rbpfs[unassigned[i]].roi[1] == rois[index[j], 1]:
-                            self.pose_rbpf.rbpfs[unassigned[i]].roi_assign = rois[index[j]]
-                            assigned_rois[index[j]] = 1
-
-        elif num_rbpfs == 0 and num_rois == 0:
-            return False, None, None
-
-        # initialize new object
-        if num_rois > 0:
-            good_initial = True
-        else:
-            good_initial = False
-
-        start_time = rospy.Time.now()
-        for i in range(num_rois):
-            if assigned_rois[i]:
-                continue
-
-            print('Initializing detection {} ... '.format(i))
-            roi = rois[i].copy()
-            print(roi)
-            self.pose_rbpf.estimation_poserbpf(roi, self.intrinsic_matrix, image_bgr, depth, im_pcloud, im_label, self.grasp_mode, self.grasp_cls)
-
-            # pose evaluation
-            image_tensor, pcloud_tensor = self.pose_rbpf.render_image_all(self.intrinsic_matrix, self.grasp_mode, self.grasp_cls)
-            cls = cfg.TEST.CLASSES[int(roi[1])]
-            sim, depth_error, vis_ratio = self.pose_rbpf.evaluate_6d_pose(self.pose_rbpf.rbpfs[-1].roi, self.pose_rbpf.rbpfs[-1].pose, cls, \
-                image_bgr, image_tensor, pcloud_tensor, depth, self.intrinsic_matrix, im_label)
-            print('Initialization : Object: {}, Sim obs: {}, Depth Err: {:.3}, Vis Ratio: {:.2}'.format(i, sim, depth_error, vis_ratio))
-
-            if sim < cfg.PF.THRESHOLD_SIM or torch.isnan(depth_error) or depth_error > cfg.PF.THRESHOLD_DEPTH or vis_ratio < cfg.PF.THRESHOLD_RATIO:
-                print('===================is NOT initialized!=================')
-                self.pose_rbpf.num_objects_per_class[self.pose_rbpf.rbpfs[-1].cls_id, self.pose_rbpf.rbpfs[-1].object_id] = 0
-                with lock_tf:
-                    del self.pose_rbpf.rbpfs[-1]
-                good_initial = False
-            else:
-                print('===================is initialized!======================')
-                self.pose_rbpf.rbpfs[-1].roi_assign = roi
-                if self.grasp_mode:
-                    if not (sim < cfg.PF.THRESHOLD_SIM_GRASPING or depth_error > cfg.PF.THRESHOLD_DEPTH_GRASPING or vis_ratio < cfg.PF.THRESHOLD_RATIO_GRASPING):
-                        self.pose_rbpf.rbpfs[-1].graspable = True
-                        self.pose_rbpf.rbpfs[-1].status = True
-                        self.pose_rbpf.rbpfs[-1].need_filter = False
-        print('initialization time %.6f' % (rospy.Time.now() - start_time).to_sec())
-
-        # filter all the objects
-        print('Filtering objects')
-        save, image_tensor = self.pose_rbpf.filtering_poserbpf(self.intrinsic_matrix, image_bgr, depth, im_pcloud, im_label, self.grasp_mode, self.grasp_cls)
-        print('*********full time %.6f' % (rospy.Time.now() - start_time).to_sec())
-
-        # non-maximum suppression within class
-        num = self.pose_rbpf.num_rbpfs
-        status = np.zeros((num, ), dtype=np.int32)
-        rois = np.zeros((num, 7), dtype=np.float32)
-        for i in range(num):
-            rois[i, :6] = self.pose_rbpf.rbpfs[i].roi[:6]
-            rois[i, 6] = self.pose_rbpf.rbpfs[i].num_frame
-        keep = nms(rois, 0.5)
-        status[keep] = 1
-
-        # remove untracked objects
-        for i in range(num):
-            if status[i] == 0 or self.pose_rbpf.rbpfs[i].num_lost >= cfg.TEST.NUM_LOST:
-                print('###############remove rbpf#################')
-                self.pose_rbpf.num_objects_per_class[self.pose_rbpf.rbpfs[i].cls_id, self.pose_rbpf.rbpfs[i].object_id] = 0
-                status[i] = 0
-                save = False
-        with lock_tf:
-            self.pose_rbpf.rbpfs = [self.pose_rbpf.rbpfs[i] for i in range(num) if status[i] > 0]
-
-        if self.pose_rbpf.num_rbpfs == 0:
-            save = False
-
-        # image to publish for visualization
-        # '''
-        if image_tensor is not None:
-            image_disp = (0.4 * image_bgr[:, :, (2, 1, 0)] + 0.6 * image_tensor) * 255
-            image_disp_1 = image_tensor * 255
-        else:
-            image_disp = 0.4 * image_bgr[:, :, (2, 1, 0)] * 255
-            image_disp_1 = image_disp
-        image_disp = torch.clamp(image_disp, 0, 255).byte().cpu().numpy()
-        image_disp_1 = torch.clamp(image_disp_1, 0, 255).byte().cpu().numpy()        
-        # '''
-        # image_disp = None
         
-        return save & good_initial, image_disp, image_disp_1
+        # depth refine
+        inputs = [batch]
+        poses = self.process_depth_refine(inputs, out_dict)        
+        return poses
+        
+        
+    def process_depth_refine(self, inputs, out_dict):
+        """
+        Args:
+            inputs: the inputs to a model.
+                It is a list of dict. Each dict corresponds to an image and
+                contains keys like "height", "width", "file_name", "image_id", "scene_id".
+            outputs:
+        """
+        cfg = self.cfg
+        net_cfg = cfg.MODEL.POSE_NET
+        out_res = net_cfg.OUTPUT_RES        
+        out_coor_x = out_dict["coor_x"].detach()
+        out_coor_y = out_dict["coor_y"].detach()
+        out_coor_z = out_dict["coor_z"].detach()
+        out_xyz = get_out_coor(cfg, out_coor_x, out_coor_y, out_coor_z)
+        out_xyz = out_xyz.to(self._cpu_device) #.numpy()
+
+        out_mask = get_out_mask(cfg, out_dict["mask"].detach())
+        out_mask = out_mask.to(self._cpu_device) #.numpy()
+        out_rots = out_dict["rot"].detach().to(self._cpu_device).numpy()
+        out_transes = out_dict["trans"].detach().to(self._cpu_device).numpy()
+
+        zoom_K = batch_data_inference_roi(cfg, inputs)['roi_zoom_K']
+        print('zoom_K', zoom_K)
+
+        out_i = -1
+        poses = []
+        for i, _input, in enumerate(inputs):
+            for inst_i in range(len(_input["roi_img"])):
+                out_i += 1
+
+                K = _input["cam"][inst_i].cpu().numpy().copy()
+                # print('K', K)
+
+                K_crop = zoom_K[inst_i].cpu().numpy().copy()
+                # print('K_crop', K_crop)
+
+                roi_label = _input["roi_cls"][inst_i]  # 0-based label
+                score = _input["score"][inst_i]
+                cls_name = cfg.class_names[roi_label]
+
+                # get pose
+                xyz_i = out_xyz[out_i].permute(1, 2, 0)
+                mask_i = np.squeeze(out_mask[out_i])
+
+                rot_est = out_rots[out_i]
+                trans_est = out_transes[out_i]
+                pose_est = np.hstack([rot_est, trans_est.reshape(3, 1)])
+                depth_sensor_crop = cv2.resize(_input['roi_depth'][inst_i][-1].cpu().numpy().copy().squeeze(), (out_res, out_res))
+                depth_sensor_mask_crop = depth_sensor_crop > 0
+
+                net_cfg = cfg.MODEL.POSE_NET
+                crop_res = net_cfg.OUTPUT_RES
+
+                for _ in range(cfg.TEST.DEPTH_REFINE_ITER):
+                    self.ren.clear()
+                    self.ren.set_cam(K_crop)
+                    self.ren.draw_model(self.ren_models[self.data_ref.objects.index(cls_name)], pose_est)
+                    ren_im, ren_dp = self.ren.finish()
+                    
+                    # import matplotlib.pyplot as plt
+                    # plt.imshow(ren_im)
+                    # plt.show()  
+                    
+                    ren_mask = ren_dp > 0
+
+                    if self.cfg.TEST.USE_COOR_Z_REFINE:
+                        coor_np = xyz_i.numpy()
+                        coor_np_t = coor_np.reshape(-1, 3)
+                        coor_np_t = coor_np_t.T
+                        coor_np_r = rot_est @ coor_np_t
+                        coor_np_r = coor_np_r.T
+                        coor_np_r = coor_np_r.reshape(crop_res, crop_res, 3)
+                        query_img_norm = coor_np_r[:, :, -1] * mask_i.numpy()
+                        query_img_norm = query_img_norm * ren_mask * depth_sensor_mask_crop
+                    else:
+                        query_img = xyz_i
+
+                        query_img_norm = torch.norm(query_img, dim=-1) * mask_i
+                        query_img_norm = query_img_norm.numpy() * ren_mask * depth_sensor_mask_crop
+                    norm_sum = query_img_norm.sum()
+                    if norm_sum == 0:
+                        continue
+                    query_img_norm /= norm_sum
+                    norm_mask = query_img_norm > (query_img_norm.max() * self.depth_refine_threshold)
+                    yy, xx = np.argwhere(norm_mask).T  # 2 x (N,)
+                    depth_diff = depth_sensor_crop[yy, xx] - ren_dp[yy, xx]
+                    depth_adjustment = np.median(depth_diff)
+
+                    yx_coords = np.meshgrid(np.arange(crop_res), np.arange(crop_res))
+                    yx_coords = np.stack(yx_coords[::-1], axis=-1)  # (crop_res, crop_res, 2yx)
+                    yx_ray_2d = (yx_coords * query_img_norm[..., None]).sum(axis=(0, 1))  # y, x
+                    ray_3d = np.linalg.inv(K_crop) @ (*yx_ray_2d[::-1], 1)
+                    ray_3d /= ray_3d[2]
+
+                    trans_delta = ray_3d[:, None] * depth_adjustment
+                    trans_est = trans_est + trans_delta.reshape(3)
+                    pose_est = np.hstack([rot_est, trans_est.reshape(3, 1)])
+                print('pose_est', pose_est)
+                poses.append(pose_est)
+        return poses

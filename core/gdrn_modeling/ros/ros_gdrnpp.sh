@@ -23,7 +23,7 @@ PYTHONPATH="$this_dir/../..":$PYTHONPATH \
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtiff.so.5
 CUDA_VISIBLE_DEVICES=$2 python $this_dir/start_gdrnpp.py \
     --config-file $CFG --num-gpus $NGPU --eval-only \
-    --opts MODEL.WEIGHTS=$CKPT \
+    --opts MODEL.WEIGHTS=$CKPT INPUT.WITH_DEPTH=True TEST.USE_DEPTH_REFINE=True \
     ${@:4}
 
 # tensorboard --logdir /path/to/logdir --bind_all # --port 6007
