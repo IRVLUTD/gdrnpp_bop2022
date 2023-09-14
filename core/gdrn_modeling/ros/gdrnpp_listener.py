@@ -422,7 +422,7 @@ class ImageListener:
             roi_infos["scale"].append(scale)
             roi_wh = np.array([bw, bh], dtype=np.float32)
             roi_infos["roi_wh"].append(roi_wh)
-            roi_infos["resize_ratio"].append((out_res / scale).astype("float32"))
+            roi_infos["resize_ratio"].append((out_res / scale))#.astype("float32"))
 
             # CHW, float32 tensor
             # roi_image
